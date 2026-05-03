@@ -1,0 +1,39 @@
+# Hermes Language Labyrinth — config.yaml reference
+# Merge the sections you need into ~/.hermes/config.yaml
+# API keys belong in ~/.hermes/.env, never here.
+#
+# Recommended model for language narration:
+#   model:
+#     default: moonshotai/kimi-k2
+#     provider: openrouter
+#
+# Context compression — matches spec:
+compression:
+  enabled: true
+  threshold: 0.45
+  protect_last_n: 10
+
+# Context engine:
+context:
+  engine: compressor
+
+# Enable the labyrinth plugin (opt-in required):
+plugins:
+  enabled:
+    - labyrinth
+
+# Per-session toolset restriction (set via `hermes -t labyrinth,skills,memory`
+# or add these to platform_toolsets.cli to make them the CLI default):
+# agent:
+#   disabled_toolsets:
+#     - terminal
+#     - browser
+#     - web
+#     - file
+#     - vision
+
+# Skill-specific config populated by `hermes config migrate`:
+skills:
+  config:
+    labyrinth:
+      data_dir: ~/.hermes/labyrinth
