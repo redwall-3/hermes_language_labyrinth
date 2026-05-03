@@ -1,0 +1,18 @@
+## Current Campaign
+
+- **Player**: {player_name}, {player_class} | {target_language} ({language_level})
+- **Session** {current_session} of {total_sessions} | **Act**: {act_name}
+- **Story so far**: {story_summary}
+
+## This Act's Goals *(not player-facing)*
+
+{act_narrative_goals}
+
+## Suggested Story Beats Remaining
+
+{act_suggested_beats}
+
+## World Notes
+
+- Native language: {native_language}
+- Session target: {session_target_minutes} minutes

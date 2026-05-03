@@ -1,7 +1,14 @@
 [project]
 name = "hermes-language-labyrinth"
-version = "0.1.0"
-description = "Add your description here"
+version = "1.0.0"
+description = "A language-learning RPG skill for hermes-agent: immersive DM narration, silent error correction, and vocabulary logging."
 readme = "README.md"
-requires-python = ">=3.13"
+requires-python = ">=3.10"
 dependencies = []
+
+[project.scripts]
+labyrinth = "main:main"
+
+[project.urls]
+"Homepage" = "https://github.com/NousResearch/hermes-agent"
+"Issues" = "https://github.com/NousResearch/hermes-agent/issues"
