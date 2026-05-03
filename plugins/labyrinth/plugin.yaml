@@ -1,0 +1,8 @@
+name: labyrinth
+version: 1.0.0
+description: "Language Labyrinth RPG tools: vocabulary logging (log_vocabulary), turn persistence (save_turn), and story context loading (get_story_context)."
+author: NousResearch
+provides_tools:
+  - log_vocabulary
+  - save_turn
+  - get_story_context
