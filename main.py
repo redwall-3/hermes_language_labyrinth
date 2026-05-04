@@ -355,6 +355,109 @@ def cmd_list(args: argparse.Namespace) -> None:
 # ---------------------------------------------------------------------------
 
 
+def generate_session_report(campaign: dict, session_num: int) -> str:
+    """
+    Build and return a formatted learning report for a completed session.
+    This is displayed after hermes exits and optionally saved to disk.
+    """
+    turns = [t for t in campaign.get("turns", []) if t.get("session") == session_num]
+    vocab_this_session: list[dict] = []
+    for t in turns:
+        vocab_this_session.extend(t.get("vocabulary", []))
+
+    reason_counts: dict[str, int] = {}
+    for entry in vocab_this_session:
+        r = entry.get("reason", "unknown")
+        reason_counts[r] = reason_counts.get(r, 0) + 1
+
+    unique_words: dict[str, dict] = {}
+    for entry in vocab_this_session:
+        w = entry.get("word", "").strip()
+        if w and w not in unique_words:
+            unique_words[w] = entry
+
+    # Elapsed time
+    start_iso = campaign.get("session_start_time", "")
+    end_iso = campaign.get("session_end_time", "")
+    elapsed_str = ""
+    if start_iso and end_iso:
+        try:
+            from datetime import datetime as _dt
+
+            elapsed = _dt.fromisoformat(end_iso) - _dt.fromisoformat(start_iso)
+            mins = int(elapsed.total_seconds() // 60)
+            secs = int(elapsed.total_seconds() % 60)
+            elapsed_str = f"{mins}m {secs}s"
+        except Exception:
+            pass
+
+    SEP = "─" * 52
+    lines = [
+        "",
+        "╔" + "═" * 50 + "╗",
+        "║" + "  SESSION COMPLETE — LEARNING REPORT  ".center(50) + "║",
+        "╚" + "═" * 50 + "╝",
+        "",
+        f"  Player    : {campaign.get('player_name')} ({campaign.get('player_class')})",
+        f"  Language  : {campaign.get('target_language')} ({campaign.get('language_level')})",
+        f"  Session   : {session_num} of {campaign.get('total_sessions')}",
+        f"  Turns     : {len(turns)}",
+    ]
+    if elapsed_str:
+        lines.append(f"  Duration  : {elapsed_str}")
+    lines.append("")
+
+    if vocab_this_session:
+        lines.append(SEP)
+        lines.append(f"  Vocabulary this session: {len(unique_words)} word(s)")
+        lines.append(SEP)
+        if reason_counts.get("new_word"):
+            lines.append(f"  New words introduced     : {reason_counts['new_word']}")
+        if reason_counts.get("misused_by_player"):
+            lines.append(
+                f"  Errors corrected (silent): {reason_counts['misused_by_player']}"
+            )
+        if reason_counts.get("low_frequency"):
+            lines.append(
+                f"  Low-frequency / rare     : {reason_counts['low_frequency']}"
+            )
+        lines.append("")
+
+        # Group by reason for display
+        for reason_label, reason_key in [
+            ("New words", "new_word"),
+            ("Corrected (silent)", "misused_by_player"),
+            ("Low-frequency", "low_frequency"),
+        ]:
+            group = [e for e in vocab_this_session if e.get("reason") == reason_key]
+            seen: set[str] = set()
+            deduped = []
+            for e in group:
+                w = e.get("word", "").strip()
+                if w and w not in seen:
+                    seen.add(w)
+                    deduped.append(e)
+            if not deduped:
+                continue
+            lines.append(f"  [{reason_label}]")
+            for entry in deduped:
+                word = entry.get("word", "")
+                tr = entry.get("translation", "")
+                ex = entry.get("example_sentence", "")
+                lines.append(f"    {word}  —  {tr}")
+                if ex:
+                    lines.append(f"      e.g. {ex}")
+            lines.append("")
+    else:
+        lines.append("  (No vocabulary logged this session)")
+        lines.append("")
+
+    lines.append("  Keep practising! Your progress is saved.")
+    lines.append("  Run 'python main.py play' to continue the adventure.")
+    lines.append("")
+    return "\n".join(lines)
+
+
 def cmd_play(args: argparse.Namespace) -> None:
     """
     Prepare the session context file and hand off to the hermes agent.
@@ -381,8 +484,15 @@ def cmd_play(args: argparse.Namespace) -> None:
         )
         campaign["current_session"] = new_session
         save_campaign(campaign, campaign_json_path)
+        current_session = new_session
     else:
         print(f"Resuming session {current_session} (no turns recorded yet).")
+
+    # Record session start time so tools can enforce the time limit.
+    session_start = datetime.now(timezone.utc)
+    campaign["session_start_time"] = session_start.isoformat()
+    campaign["session_ended"] = False  # reset end flag for this session
+    save_campaign(campaign, campaign_json_path)
 
     # Keep the current pointer up to date.
     set_current_campaign(campaign_json_path)
@@ -391,6 +501,11 @@ def cmd_play(args: argparse.Namespace) -> None:
     rendered = render_template(campaign)
     HERMES_MD.write_text(rendered, encoding="utf-8")
     print(f"Campaign context written to: {HERMES_MD}")
+    print(
+        f"Session {current_session} | Target: {campaign.get('session_target_minutes')} min"
+        f" | Language: {campaign.get('target_language')} ({campaign.get('language_level')})"
+    )
+    print("Type /end to finish the session early.\n")
 
     # Pass the campaign path through the environment so hermes tools can read it.
     env = os.environ.copy()
@@ -405,9 +520,10 @@ def cmd_play(args: argparse.Namespace) -> None:
         "language-labyrinth",
     ]
     print(f"Launching: {' '.join(hermes_cmd)}\n")
+    exit_code = 0
     try:
         result = subprocess.run(hermes_cmd, env=env)
-        sys.exit(result.returncode)
+        exit_code = result.returncode
     except FileNotFoundError:
         print(
             f"Error: hermes binary not found at {HERMES_BIN}.\n"
@@ -416,6 +532,32 @@ def cmd_play(args: argparse.Namespace) -> None:
             file=sys.stderr,
         )
         sys.exit(1)
+    except KeyboardInterrupt:
+        pass  # User pressed Ctrl+C — still generate the report
+
+    # --- Post-session: record end time and generate learning report ---
+    campaign = load_campaign(campaign_json_path)  # reload — tools may have mutated it
+    campaign["session_end_time"] = datetime.now(timezone.utc).isoformat()
+    save_campaign(campaign, campaign_json_path)
+
+    turns_played = count_turns_for_session(campaign, current_session)
+    if turns_played > 0:
+        report = generate_session_report(campaign, current_session)
+        print(report)
+
+        # Optionally save report to file next to campaign JSON
+        report_path = (
+            campaign_json_path.parent / f"session_{current_session}_report.txt"
+        )
+        try:
+            report_path.write_text(report, encoding="utf-8")
+            print(f"  Report saved to: {report_path}")
+        except Exception:
+            pass
+    else:
+        print("\n(No turns were recorded this session — no report generated.)")
+
+    sys.exit(exit_code)
 
 
 # ---------------------------------------------------------------------------

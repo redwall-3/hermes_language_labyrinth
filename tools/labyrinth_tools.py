@@ -19,6 +19,7 @@ import json
 import logging
 import os
 import threading
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -161,7 +162,9 @@ SAVE_TURN_SCHEMA: dict = {
     "description": (
         "Persist the current turn (player input + DM narration) to disk. "
         "Must be called at the end of EVERY narration response, no exceptions. "
-        "Bundles any vocabulary logged via log_vocabulary during this turn."
+        "Bundles any vocabulary logged via log_vocabulary during this turn. "
+        "IMPORTANT: after this tool returns, output NOTHING further — "
+        "your turn is complete; wait silently for the player's next message."
     ),
     "parameters": {
         "type": "object",
@@ -172,7 +175,8 @@ SAVE_TURN_SCHEMA: dict = {
             },
             "narration": {
                 "type": "string",
-                "description": "The DM's narration response for this turn.",
+                "description": "The complete DM narration for this turn (100-150 words). "
+                "Include [END OF SESSION] at the end if the session is ending.",
             },
         },
         "required": ["player_input", "narration"],
@@ -208,6 +212,27 @@ def handle_save_turn(args: dict, **kwargs: Any) -> str:
     all_vocab: list = data.setdefault("vocabulary", [])
 
     turn_number = len([t for t in turns if t.get("session") == current_session]) + 1
+
+    # Detect explicit session-end marker in narration
+    session_ended = "[END OF SESSION]" in narration
+
+    # ── Session timer check ───────────────────────────────────────────────
+    session_time_exceeded = False
+    elapsed_minutes: float = 0.0
+    session_start_iso: str = data.get("session_start_time", "")
+    session_target: float = float(data.get("session_target_minutes", 30.0))
+
+    if session_start_iso:
+        try:
+            from datetime import datetime as _dt
+
+            start = _dt.fromisoformat(session_start_iso)
+            elapsed_minutes = (time.time() - start.timestamp()) / 60.0
+            if elapsed_minutes >= session_target:
+                session_time_exceeded = True
+        except Exception:
+            pass
+
     turn_record = {
         "session": current_session,
         "turn": turn_number,
@@ -219,8 +244,12 @@ def handle_save_turn(args: dict, **kwargs: Any) -> str:
     turns.append(turn_record)
     all_vocab.extend(vocab_this_turn)
 
-    # Update story summary to the last narration (lightweight rolling summary)
-    data["last_narration"] = narration[:400]
+    # Update rolling story summary (strip [END OF SESSION] marker)
+    summary_text = narration.replace("[END OF SESSION]", "").strip()
+    data["last_narration"] = summary_text[:400]
+
+    if session_ended:
+        data["session_ended"] = True
 
     try:
         campaign_path.write_text(
@@ -231,20 +260,41 @@ def handle_save_turn(args: dict, **kwargs: Any) -> str:
         return json.dumps({"error": f"Could not write campaign file: {exc}"})
 
     logger.info(
-        "save_turn: session=%d turn=%d vocab=%d [task=%s]",
+        "save_turn: session=%d turn=%d vocab=%d elapsed=%.1fm [task=%s]",
         current_session,
         turn_number,
         len(vocab_this_turn),
+        elapsed_minutes,
         task_id,
     )
-    return json.dumps(
-        {
-            "status": "saved",
-            "turn": turn_number,
-            "session": current_session,
-            "vocab_logged": len(vocab_this_turn),
-        }
-    )
+
+    response: dict[str, Any] = {
+        "status": "saved",
+        "turn": turn_number,
+        "session": current_session,
+        "vocab_logged": len(vocab_this_turn),
+        # ── Critical: stop the agent from generating a follow-up message ──
+        "dm_action": "WAIT"
+        if not (session_time_exceeded or session_ended)
+        else "END_SESSION",
+        "instruction": (
+            "Your turn is complete. Do NOT output any further text. "
+            "Wait silently for the player's next message."
+            if not (session_time_exceeded or session_ended)
+            else "Session time has ended (or player typed /end). "
+            "If you have not already done so, narrate a natural resting point "
+            "and append [END OF SESSION] to your narration, then call save_turn "
+            "one final time. Output nothing further after that."
+        ),
+    }
+    if session_time_exceeded:
+        response["session_time_exceeded"] = True
+        response["elapsed_minutes"] = round(elapsed_minutes, 1)
+        response["session_target_minutes"] = session_target
+    if session_ended:
+        response["session_ended"] = True
+
+    return json.dumps(response)
 
 
 # ---------------------------------------------------------------------------
